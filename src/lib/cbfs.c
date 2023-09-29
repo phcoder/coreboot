@@ -6,6 +6,7 @@
 #include <cbmem.h>
 #include <commonlib/bsd/cbfs_private.h>
 #include <commonlib/bsd/compression.h>
+#include <commonlib/endian.h>
 #include <console/console.h>
 #include <fmap.h>
 #include <lib.h>
@@ -197,11 +198,11 @@ static bool cbfs_file_hash_mismatch(const void *buffer, size_t size,
 	return false;
 }
 
-static size_t cbfs_load_and_decompress(const struct region_device *rdev, void *buffer,
-				       size_t buffer_size, uint32_t compression,
-				       const union cbfs_mdata *mdata, bool skip_verification)
+
+static size_t cbfs_load_and_decompress_offset(const struct region_device *rdev, void *buffer,
+					      size_t buffer_size, uint32_t compression,
+					      const union cbfs_mdata *mdata, bool skip_verification, size_t in_offset, size_t in_size)
 {
-	size_t in_size = region_device_sz(rdev);
 	size_t out_size = 0;
 	void *map;
 
@@ -219,7 +220,7 @@ static size_t cbfs_load_and_decompress(const struct region_device *rdev, void *b
 	case CBFS_COMPRESS_NONE:
 		if (buffer_size < in_size)
 			return 0;
-		if (rdev_readat(rdev, buffer, 0, in_size) != in_size)
+		if (rdev_readat(rdev, buffer, in_offset, in_size) != in_size)
 			return 0;
 		if (cbfs_file_hash_mismatch(buffer, in_size, mdata, skip_verification))
 			return 0;
@@ -231,7 +232,7 @@ static size_t cbfs_load_and_decompress(const struct region_device *rdev, void *b
 
 		/* cbfs_prog_stage_load() takes care of in-place LZ4 decompression by
 		   setting up the rdev to be in memory. */
-		map = rdev_mmap_full(rdev);
+		map = rdev_mmap(rdev, in_offset, in_size);
 		if (map == NULL)
 			return 0;
 
@@ -248,7 +249,7 @@ static size_t cbfs_load_and_decompress(const struct region_device *rdev, void *b
 	case CBFS_COMPRESS_LZMA:
 		if (!cbfs_lzma_enabled())
 			return 0;
-		map = rdev_mmap_full(rdev);
+		map = rdev_mmap(rdev, in_offset, in_size);
 		if (map == NULL)
 			return 0;
 
@@ -266,6 +267,13 @@ static size_t cbfs_load_and_decompress(const struct region_device *rdev, void *b
 	default:
 		return 0;
 	}
+}
+
+static size_t cbfs_load_and_decompress(const struct region_device *rdev, void *buffer,
+				       size_t buffer_size, uint32_t compression,
+				       const union cbfs_mdata *mdata, bool skip_verification)
+{
+	return cbfs_load_and_decompress_offset(rdev, buffer, buffer_size, compression, mdata, skip_verification, 0, region_device_sz(rdev));
 }
 
 struct cbfs_preload_context {
@@ -552,39 +560,72 @@ enum cb_err cbfs_prog_stage_load(struct prog *pstage)
 	if ((err = _cbfs_boot_lookup(prog_name(pstage), false, &mdata, &rdev)))
 		return err;
 
-	assert(be32toh(mdata.h.type) == CBFS_TYPE_STAGE);
-	pstage->cbfs_type = CBFS_TYPE_STAGE;
+	uint32_t stage_type = be32toh(mdata.h.type);
+	assert(stage_type == CBFS_TYPE_STAGE || stage_type == CBFS_TYPE_LEGACY_STAGE);
+	pstage->cbfs_type = stage_type;
 
 	enum cbfs_compression compression = CBFS_COMPRESS_NONE;
-	const struct cbfs_file_attr_compression *cattr = cbfs_find_attr(&mdata,
-				CBFS_FILE_ATTR_TAG_COMPRESSION, sizeof(*cattr));
-	if (cattr)
-		compression = be32toh(cattr->compression);
+	size_t foffset = 0;
+	size_t fsize = region_device_sz(&rdev);
+	size_t memsize;
+	uint8_t *load;
 
-	const struct cbfs_file_attr_stageheader *sattr = cbfs_find_attr(&mdata,
-				CBFS_FILE_ATTR_TAG_STAGEHEADER, sizeof(*sattr));
-	if (!sattr)
-		return CB_ERR;
-	prog_set_area(pstage, (void *)(uintptr_t)be64toh(sattr->loadaddr),
-		      be32toh(sattr->memlen));
-	prog_set_entry(pstage, prog_start(pstage) +
+	if (stage_type == CBFS_TYPE_LEGACY_STAGE) {
+		struct cbfs_legacy_stage legacy_stage;
+		void *entry;
+		if (rdev_readat(&rdev, &legacy_stage, 0, sizeof(legacy_stage)) != sizeof(legacy_stage))
+			return CB_CBFS_IO;
+
+		fsize -= sizeof(legacy_stage);
+		foffset += sizeof(legacy_stage);
+
+		/* cbfs_stage fields are written in little endian despite the other
+		   cbfs data types being encoded in big endian. */
+		compression = read_le32(&legacy_stage.compression);
+		entry = (void *)(uintptr_t)read_le64(&legacy_stage.entry);
+		load = (void *)(uintptr_t)read_le64(&legacy_stage.load);
+		memsize = read_le32(&legacy_stage.memlen);
+		
+		assert(fsize == read_le32(&legacy_stage.len));
+		prog_set_area(pstage, load, memsize);
+		prog_set_entry(pstage, entry, NULL);
+	} else {
+		const struct cbfs_file_attr_compression *cattr = cbfs_find_attr(&mdata,
+										CBFS_FILE_ATTR_TAG_COMPRESSION, sizeof(*cattr));
+		if (cattr)
+			compression = be32toh(cattr->compression);
+
+		const struct cbfs_file_attr_stageheader *sattr = cbfs_find_attr(&mdata,
+										CBFS_FILE_ATTR_TAG_STAGEHEADER, sizeof(*sattr));
+		if (!sattr)
+			return CB_ERR;
+		prog_set_area(pstage, (void *)(uintptr_t)be64toh(sattr->loadaddr),
+			      be32toh(sattr->memlen));
+		prog_set_entry(pstage, prog_start(pstage) +
 			       be32toh(sattr->entry_offset), NULL);
+		load = prog_start(pstage);
+		memsize = prog_size(pstage);
+	}
 
 	/* Hacky way to not load programs over read only media. The stages
 	 * that would hit this path initialize themselves. */
 	if ((ENV_BOOTBLOCK || ENV_SEPARATE_VERSTAGE) &&
 	    !CONFIG(NO_XIP_EARLY_STAGES) && CONFIG(BOOT_DEVICE_MEMORY_MAPPED)) {
-		void *mapping = rdev_mmap_full(&rdev);
+		void *mapping = rdev_mmap(&rdev, foffset, fsize);
 		rdev_munmap(&rdev, mapping);
 		if (cbfs_file_hash_mismatch(mapping, region_device_sz(&rdev), &mdata, false))
 			return CB_CBFS_HASH_MISMATCH;
-		if (mapping == prog_start(pstage))
+		if (mapping == load) {
+			printk(BIOS_DEBUG, "Running stage in-place at %p, entry=%p\n", mapping, prog_entry(pstage));
 			return CB_SUCCESS;
+		}
 	}
 
 	/* LZ4 stages can be decompressed in-place to save mapping scratch space. Load the
 	   compressed data to the end of the buffer and point &rdev to that memory location. */
 	if (cbfs_lz4_enabled() && compression == CBFS_COMPRESS_LZ4) {
+		assert(stage_type == CBFS_TYPE_STAGE);
+
 		size_t in_size = region_device_sz(&rdev);
 		void *compr_start = prog_start(pstage) + prog_size(pstage) - in_size;
 		if (rdev_readat(&rdev, compr_start, 0, in_size) != in_size)
@@ -592,16 +633,15 @@ enum cb_err cbfs_prog_stage_load(struct prog *pstage)
 		rdev_chain_mem(&rdev, compr_start, in_size);
 	}
 
-	size_t fsize = cbfs_load_and_decompress(&rdev, prog_start(pstage), prog_size(pstage),
-						compression, &mdata, false);
+	fsize = cbfs_load_and_decompress_offset(&rdev, load, memsize,
+						compression, &mdata, false, foffset, fsize);
 	if (!fsize)
 		return CB_ERR;
 
 	/* Clear area not covered by file. */
-	memset(prog_start(pstage) + fsize, 0, prog_size(pstage) - fsize);
+	memset(load + fsize, 0, memsize - fsize);
 
-	prog_segment_loaded((uintptr_t)prog_start(pstage), prog_size(pstage),
-			    SEG_FINAL);
+	prog_segment_loaded((uintptr_t)load, memsize, SEG_FINAL);
 
 	return CB_SUCCESS;
 }
