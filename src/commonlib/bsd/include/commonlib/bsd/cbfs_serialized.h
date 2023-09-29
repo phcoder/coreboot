@@ -178,6 +178,17 @@ struct cbfs_file_attr_stageheader {
 /* Following are component sub-headers for the "standard"
    component types */
 
+/** This is the sub-header for legacy stage components.  Stages are
+    loaded by coreboot during the normal boot process */
+
+struct cbfs_legacy_stage {
+       uint32_t compression;  /** Compression type */
+       uint64_t entry;  /** entry point */
+       uint64_t load;   /** Where to load in memory */
+       uint32_t len;          /** length of data to load */
+       uint32_t memlen;           /** total length of object in memory */
+} __packed;
+
 /** this is the sub-header for payload components.  Payloads
     are loaded by coreboot at the end of the boot process */
 
