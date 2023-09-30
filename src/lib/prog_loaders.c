@@ -13,6 +13,9 @@
 #include <stage_cache.h>
 #include <symbols.h>
 #include <timestamp.h>
+#if CONFIG(DEBUG_NULL_DEREF_BREAKPOINTS_IN_ALL_STAGES)
+#include <arch/null_breakpoint.h>
+#endif
 
 void run_romstage(void)
 {
@@ -30,6 +33,12 @@ void run_romstage(void)
 		if (cbfs_prog_stage_load(&romstage))
 			goto fail;
 	}
+
+#if CONFIG(DEBUG_NULL_DEREF_BREAKPOINTS_IN_ALL_STAGES)
+	/* When going from bootblock disable null breakpoint as romstage
+	   might not have this enabled or be too old.  */
+	null_breakpoint_disable();
+#endif
 
 	timestamp_add_now(TS_COPYROM_END);
 
