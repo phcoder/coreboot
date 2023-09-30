@@ -8,15 +8,20 @@
 #include <console/console.h>
 #include <smmstore.h>
 #include <types.h>
+#include <commonlib/bsd/cbfs_private.h>
 
 #define SMMSTORE_REGION "SMMSTORE"
 
+
+#ifdef FMAP_SECTION_SMMSTORE_START
 
 _Static_assert(IS_ALIGNED(FMAP_SECTION_SMMSTORE_START, SMM_BLOCK_SIZE),
 	       "SMMSTORE FMAP region not aligned to 64K");
 
 _Static_assert(SMM_BLOCK_SIZE <= FMAP_SECTION_SMMSTORE_SIZE,
 	       "SMMSTORE FMAP region must be at least 64K");
+
+#endif
 
 /*
  * The region format is still not finalized, but so far it looks like this:
@@ -42,14 +47,26 @@ _Static_assert(SMM_BLOCK_SIZE <= FMAP_SECTION_SMMSTORE_SIZE,
 
 static enum cb_err lookup_store_region(struct region *region)
 {
-	if (fmap_locate_area(SMMSTORE_REGION, region)) {
-		printk(BIOS_WARNING,
-		       "smm store: Unable to find SMM store FMAP region '%s'\n",
-		       SMMSTORE_REGION);
-		return CB_ERR;
+	struct region rw_legacy;
+	struct region_device rw_legacy_rdev;
+	union cbfs_mdata mdata;
+	size_t data_offset;
+
+	if (fmap_locate_area(SMMSTORE_REGION, region) == 0)
+		return CB_SUCCESS;
+
+	if (fmap_locate_area("RW_LEGACY", &rw_legacy) == 0
+	    && boot_device_ro_subregion(&rw_legacy, &rw_legacy_rdev) == 0
+	    && cbfs_lookup(&rw_legacy_rdev, "smmstore.bin", &mdata, &data_offset, NULL) == 0) {
+		region->offset = rw_legacy.offset + data_offset;
+		region->size = be32toh(mdata.h.len);
+		return CB_SUCCESS;
 	}
 
-	return CB_SUCCESS;
+	printk(BIOS_WARNING,
+	       "smm store: Unable to find SMM store FMAP region '%s'\n",
+	       SMMSTORE_REGION);
+	return CB_ERR;
 }
 
 /*
@@ -99,7 +116,9 @@ int smmstore_lookup_region(struct region_device *rstore)
 
 		done = 1;
 
-		if (fmap_locate_area_as_rdev_rw(SMMSTORE_REGION, &rdev)) {
+		struct region ar;
+
+		if (lookup_store_region(&ar) || boot_device_rw_subregion(&ar, &rdev)) {
 			printk(BIOS_WARNING,
 			       "smm store: Unable to find SMM store FMAP region '%s'\n",
 				SMMSTORE_REGION);
