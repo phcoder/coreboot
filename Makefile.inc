@@ -202,7 +202,7 @@ ifeq ($(CONFIG_COVERAGE),y)
 ramstage-c-ccopts += -fprofile-arcs -ftest-coverage
 endif
 ifneq ($(GIT),)
-ifneq ($(UPDATED_SUBMODULES),1)
+ifneq (1,1)
 $(info Updating git submodules.)
 # try to fetch non-optional submodules if the source is under git
 forgetthis:=$(shell git submodule update --init $(quiet_errors))
