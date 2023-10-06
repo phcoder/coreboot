@@ -21,6 +21,13 @@ config VBOOT
 
 if VBOOT
 
+config VBOOT_HYBRID
+	bool "Create hybrid vboot image."
+	default n
+	help
+	  Enable VBOOT only in bootblock and add code to control it from CMOS. Useful for creating hybrid ROM with RW going vboot path and RO not.
+
+
 comment "Anti-Rollback Protection disabled because mocking secdata is enabled."
 	depends on VBOOT_MOCK_SECDATA
 
