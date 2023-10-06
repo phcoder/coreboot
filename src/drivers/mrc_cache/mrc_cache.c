@@ -134,7 +134,7 @@ static const struct cache_region *lookup_region_type(int type)
 	int i;
 	int flags;
 
-	if (CONFIG(VBOOT_STARTS_IN_BOOTBLOCK) && vboot_recovery_mode_enabled())
+	if (CONFIG(VBOOT_STARTS_IN_BOOTBLOCK) && (CONFIG(VBOOT_HYBRID) || vboot_recovery_mode_enabled()))
 		flags = RECOVERY_FLAG;
 	else
 		flags = NORMAL_FLAG;
@@ -296,7 +296,7 @@ static int mrc_cache_find_current(int type, uint32_t version,
 	 * switch is set.
 	 */
 	if (CONFIG(VBOOT_STARTS_IN_BOOTBLOCK) && vboot_recovery_mode_enabled()
-	    && get_recovery_mode_retrain_switch())
+	    && get_recovery_mode_retrain_switch() && !CONFIG(VBOOT_HYBRID))
 		return -1;
 
 	cr = lookup_region(&region, type);
@@ -612,6 +612,9 @@ static void invalidate_normal_cache(void)
 	 * to be invalidated.
 	 */
 	if (!CONFIG(HAS_RECOVERY_MRC_CACHE) && CONFIG(VBOOT_STARTS_IN_ROMSTAGE))
+		return;
+
+	if (CONFIG(VBOOT_HYBRID))
 		return;
 
 	/* We only invalidate the normal cache in recovery mode. */
