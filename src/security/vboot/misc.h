@@ -67,6 +67,9 @@ static inline int vboot_logic_executed(void)
 {
 	extern int vboot_executed;	/* should not be globally accessible */
 
+	if (CONFIG(VBOOT_HYBRID) && !ENV_BOOTBLOCK)
+		return false;
+
 	/* If we are in the stage that runs verification, or in the stage that
 	   both loads the verstage and is returned to from it afterwards, we
 	   need to check a global to see if verification has run. */
