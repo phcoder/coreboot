@@ -51,7 +51,7 @@ int vboot_retrieve_hash(void *digest, size_t digest_size);
  * Main logic for verified boot. verstage_main() is just the core vboot logic.
  * If the verstage is a separate stage, it should be entered via main().
  */
-void verstage_main(void);
+int verstage_main(void);
 void verstage_mainboard_early_init(void);
 void verstage_mainboard_init(void);
 

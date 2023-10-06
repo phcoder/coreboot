@@ -14,6 +14,7 @@
 #include <timestamp.h>
 #include <vb2_api.h>
 #include <boot_device.h>
+#include <pc80/mc146818rtc.h>
 
 #include "antirollback.h"
 
@@ -233,17 +234,102 @@ static void check_boot_mode(struct vb2_context *ctx)
 		ctx->flags |= VB2_CONTEXT_EC_TRUSTED;
 }
 
+#define RECOVERY_OVERRIDE_ADDR 0xf7
+
+static bool use_vboot(bool is_s3)
+{
+#if CONFIG(VBOOT_HYBRID)
+	uint8_t recovery_override = cmos_read(RECOVERY_OVERRIDE_ADDR);
+	int counter = recovery_override & 0xf;
+
+	printk(BIOS_INFO, "recovery_override=0x%x, is_s3=%d\n", recovery_override, is_s3);
+
+	if ((recovery_override & 0xf0) != 0xc0)
+		return 0;
+
+	if (is_s3)
+		return 1;
+
+	if (counter == 0) {
+		cmos_write(0xff, RECOVERY_OVERRIDE_ADDR);
+		return 0;
+	}
+
+	if (counter != 0xf)
+		cmos_write(0xc0 | (counter - 1), RECOVERY_OVERRIDE_ADDR);
+#endif
+
+	return 1;
+}
+
+static bool ensure_tpm_rw_is_locked(bool is_s3)
+{
+	static const uint8_t boot_mode_digest[VB2_PCR_DIGEST_RECOMMENDED_SIZE] = {
+		/* sha256("skipmode") */
+		0x73, 0x17, 0x91, 0x09, 0x91, 0x2a, 0xbd, 0xcc,
+		0x23, 0xad, 0x82, 0x2c, 0x2f, 0xd5, 0x81, 0xad,
+		0xc5, 0xa6, 0xef, 0xc2, 0xae, 0x73, 0xfd, 0xb3,
+		0x7b, 0x56, 0xb7, 0x14, 0xbd, 0xb9, 0x82, 0x99,
+	};
+	static const uint8_t hwid_unknown_digest[VB2_PCR_DIGEST_RECOMMENDED_SIZE] = {
+		/* sha256("unknown") */
+		0xb2, 0x3a, 0x6a, 0x84, 0x39, 0xc0, 0xdd, 0xe5,
+		0x51, 0x58, 0x93, 0xe7, 0xc9, 0x0c, 0x1e, 0x32,
+		0x33, 0xb8, 0x61, 0x6e, 0x63, 0x44, 0x70, 0xf2,
+		0x0d, 0xc4, 0x92, 0x8b, 0xcf, 0x36, 0x09, 0xbc
+	};
+	uint8_t buffer[VB2_PCR_DIGEST_RECOMMENDED_SIZE];
+
+	int algo = CONFIG(TPM1) ? VB2_HASH_SHA1 : VB2_HASH_SHA256;
+	int digest_size = CONFIG(TPM1) ? VB2_SHA1_DIGEST_SIZE : VB2_SHA256_DIGEST_SIZE;
+	int rv = tpm_setup(is_s3);
+
+	if (rv) {
+		printk(BIOS_ERR, "TPM setup failed with 0x%x\n", rv);
+		return 0;
+	}
+
+	rv = tpm_extend_pcr(CONFIG_PCR_BOOT_MODE, algo, boot_mode_digest, digest_size, "VBOOT: boot mode");
+	if (rv) {
+		printk(BIOS_ERR, "Boot mode extend failed with 0x%x\n", rv);
+		return 0;
+	}
+
+	memcpy(buffer, hwid_unknown_digest, sizeof(buffer));
+
+	struct region_device rdev;
+
+	if (fmap_locate_area_as_rdev("GBB", &rdev))
+		rdev_readat(&rdev, buffer, 48, 32);
+
+	rv = tpm_extend_pcr(CONFIG_PCR_HWID, algo, buffer, digest_size, "VBOOT: GBB HWID");
+	if (rv) {
+		printk(BIOS_ERR, "HWID extend failed with 0x%x\n", rv);
+		return 0;
+	}
+
+	printk(BIOS_INFO, "Successfully locked-out RW secrets\n");
+
+	return 1;
+}
+
 /* Verify and select the firmware in the RW image */
-void verstage_main(void)
+int verstage_main(void)
 {
 	struct vb2_context *ctx;
 	vb2_error_t rv;
+	bool is_s3 = platform_is_resuming();
 
 	timestamp_add_now(TS_VBOOT_START);
 
 	/* Lockdown SPI flash controller if required */
 	if (CONFIG(BOOTMEDIA_LOCK_IN_VERSTAGE))
 		boot_device_security_lockdown();
+
+	if (!use_vboot(is_s3)) {
+		if (ensure_tpm_rw_is_locked(is_s3))
+			return 0;
+	}
 
 	/* Set up context and work buffer */
 	ctx = vboot_get_context();
@@ -256,7 +342,7 @@ void verstage_main(void)
 	 * does verification of memory init and thus must ensure it resumes with
 	 * the same slot that it booted from. */
 	if (CONFIG(RESUME_PATH_SAME_AS_BOOT) &&
-		platform_is_resuming())
+		is_s3)
 		ctx->flags |= VB2_CONTEXT_S3_RESUME;
 
 	/* Read secdata from TPM. Initialize TPM if secdata not found. We don't
@@ -390,4 +476,6 @@ void verstage_main(void)
 
  verstage_main_exit:
 	timestamp_add_now(TS_VBOOT_END);
+
+	return 1;
 }

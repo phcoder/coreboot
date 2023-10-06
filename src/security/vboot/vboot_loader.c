@@ -60,8 +60,8 @@ void vboot_run_logic(void)
 {
 	if (verification_should_run()) {
 		/* Note: this path is not used for VBOOT_RETURN_FROM_VERSTAGE */
-		verstage_main();
-		after_verstage();
+		if (verstage_main())
+			after_verstage();
 	} else if (verstage_should_load()) {
 		struct prog verstage =
 			PROG_INIT(PROG_VERSTAGE,

@@ -209,7 +209,7 @@ static void handle_cse_eop_result(enum cse_cmd_result result)
 		printk(BIOS_ERR, "Failed to send EOP to CSE, %d\n", result);
 		/* For vboot, trigger recovery mode if applicable, as there is
 		   likely something very broken in this case. */
-		if (CONFIG(VBOOT) && !vboot_recovery_mode_enabled())
+		if (CONFIG(VBOOT) && !CONFIG(VBOOT_HYBRID) && !vboot_recovery_mode_enabled())
 			cse_trigger_vboot_recovery(CSE_EOP_FAIL);
 
 		/* In non-vboot builds or recovery mode, follow the BWG in order
