@@ -45,6 +45,10 @@ static void chromeos_init_chromeos_acpi(void *unused)
 	if (acpi_is_wakeup_s3())
 		return;
 
+#if CONFIG(VBOOT_HYBRID)
+	memset(chromeos_acpi, 0, sizeof(*chromeos_acpi));
+#endif
+
 	vpd_size = chromeos_vpd_region("RO_VPD", &vpd_base);
 	if (vpd_size && vpd_base) {
 		chromeos_acpi->vpd_ro_base = vpd_base;
@@ -56,6 +60,40 @@ static void chromeos_init_chromeos_acpi(void *unused)
 		chromeos_acpi->vpd_rw_base = vpd_base;
 		chromeos_acpi->vpd_rw_size = vpd_size;
 	}
+
+	/* In case of hybrid we may not have depthcharge,
+	   so fill CBNV ourselves, so that crossystem works properly.  */
+#if CONFIG(VBOOT_HYBRID)
+	chromeos_acpi->vbt0 = 0; /* Boot reason other */
+	chromeos_acpi->vbt1 = 0; /* Main fw recovery */
+#if CONFIG(EC_GOOGLE_CHROMEEC)
+	chromeos_acpi->vbt2 = !google_ec_running_ro();
+#else
+	chromeos_acpi->vbt2 = 1; /* Assume RW */
+#endif
+	chromeos_acpi->vbt3 = 0; /* No switches */
+
+	struct region_device rdev;
+	if (fmap_locate_area_as_rdev("GBB", &rdev)) {
+		struct {
+			uint32_t hwid_offset;
+			uint32_t hwid_size;
+		} hwid_pointer = {0, 0};
+		rdev_readat(&rdev, &hwid_pointer, 16, 8);
+		if (hwid_pointer.hwid_size > sizeof(chromeos_acpi->vbt4))
+			hwid_pointer.hwid_size = sizeof(chromeos_acpi->vbt4);
+		rdev_readat(&rdev, chromeos_acpi->vbt4,
+			    hwid_pointer.hwid_offset, hwid_pointer.hwid_size);
+	}
+	const char fwid[] = CONFIG_VBOOT_FWID_MODEL CONFIG_VBOOT_FWID_VERSION;
+	const uint32_t fwid_size = sizeof(fwid) < sizeof(chromeos_acpi->vbt5) ? sizeof(fwid) : sizeof(chromeos_acpi->vbt5);
+	memcpy(chromeos_acpi->vbt5, fwid, fwid_size);
+	memcpy(chromeos_acpi->vbt6, fwid, fwid_size);
+	chromeos_acpi->vbt7 = 1; /* Firmware type: normal */
+	chromeos_acpi->vbt8 = 0; /* Recovery reason: none */
+	chromeos_acpi->vbt9 = (u32) cbmem_entry_find(CBMEM_ID_FMAP);
+	/* Missing: VDAT. */
+#endif
 }
 
 BOOT_STATE_INIT_ENTRY(BS_PRE_DEVICE, BS_ON_EXIT, chromeos_init_chromeos_acpi, NULL);
