@@ -17,6 +17,7 @@
 #include <vb2_api.h>
 #include <boot_device.h>
 #include <pc80/mc146818rtc.h>
+#include "../2lib/include/2nvstorage.h"
 
 #include "antirollback.h"
 
@@ -345,6 +346,12 @@ int verstage_main(void)
 
 	/* Initialize and read nvdata from non-volatile storage. */
 	vbnv_init();
+
+	/* Spurious. But if we continue we'll get into recovery bootloader. So clear it.  */
+	if (CONFIG(VBOOT_HYBRID) && vb2_nv_get(ctx, VB2_NV_RECOVERY_REQUEST) == VB2_RECOVERY_SECDATA_FIRMWARE_INIT) {
+		vb2_nv_set(ctx, VB2_NV_RECOVERY_REQUEST, 0);
+		vb2_nv_set(ctx, VB2_NV_RECOVERY_SUBCODE, 0);
+	}
 
 	/* Set S3 resume flag if vboot should behave differently when selecting
 	 * which slot to boot.  This is only relevant to vboot if the platform
